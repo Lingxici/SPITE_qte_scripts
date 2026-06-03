@@ -6,22 +6,20 @@ from pynput.keyboard import Controller, Key
 
 keyboard = Controller()
 
-# 2k 分辨率下，判定槽大概位置
 BAR = {"top": 1060, "left": 120, "width": 2320, "height": 70}
-# 绿色判定区块
 GREEN_LO = np.array([25, 90, 95])
 GREEN_HI = np.array([45, 255, 255])
-# 白色判定线
 WHITE_LO = np.array([0, 0, 200])
 WHITE_HI = np.array([180, 30, 255])
 
-# 提前量（像素）- 分辨率不同需自行修改
-LEAD_PIXELS = 62  # 提前2帧（31像素/帧 × 2帧）
-
+PIXELS_PER_FRAME = 31
+cooldown = 0.3
 last_trigger_time = 0
-cooldown = 0.5  # 0.5秒冷却
 
-print("于 5s 内切换至游戏内 QTE 游戏界面")
+# 绿色宽度限制
+MIN_GREEN_WIDTH = 50
+MAX_GREEN_WIDTH = 500
+
 time.sleep(5)
 
 with mss.MSS() as sct:
@@ -38,7 +36,11 @@ with mss.MSS() as sct:
         if len(green_cols) < 5: continue
         g_left = BAR["left"] + green_cols[0]
         g_right = BAR["left"] + green_cols[-1]
-        g_center = (g_left + g_right) // 2
+        green_width = g_right - g_left
+
+        # 过滤异常绿色宽度
+        if green_width < MIN_GREEN_WIDTH or green_width > MAX_GREEN_WIDTH:
+            continue
 
         # 识别白色竖线
         white_mask = cv2.inRange(hsv, WHITE_LO, WHITE_HI)
@@ -46,27 +48,48 @@ with mss.MSS() as sct:
         if len(white_cols) == 0: continue
         w_x = BAR["left"] + white_cols[0]
 
-        # 计算竖线到绿色中心的距离
-        distance_to_center = abs(w_x - g_center)
+        # 计算竖线到绿色边界的距离
+        dist_to_green = 0
+        if w_x < g_left:
+            dist_to_green = g_left - w_x
+        elif w_x > g_right:
+            dist_to_green = w_x - g_right
+        else:
+            continue  # 已在绿色内，跳过
 
-        # 触发条件：竖线距离绿色中心小于阈值
-        trigger_distance = LEAD_PIXELS
+        # 计算还需要多少帧到达绿色边界
+        frames_needed = dist_to_green / PIXELS_PER_FRAME
 
-        if distance_to_center <= trigger_distance:
-            if current_time - last_trigger_time > cooldown:
-                print(f"\n🎯 触发！竖线: {w_x}, 绿色中心: {g_center}")
-                print(f"   距离: {distance_to_center}像素")
+        # 根据绿色宽度动态调整延迟帧数
+        if green_width >= 200:
+            delay_frames = 2.0
+        elif green_width >= 100:
+            delay_frames = 1.7
+        else:
+            delay_frames = 1.5
 
-                keyboard.press(Key.space)
-                time.sleep(0.05)
-                keyboard.release(Key.space)
+        # 触发条件：还需要的帧数 <= 动态延迟
+        should_trigger = False
+        if 0 < frames_needed <= delay_frames:
+            should_trigger = True
 
-                last_trigger_time = current_time
-                print(f"⌨️ 已按空格，冷却{cooldown}秒")
+        if should_trigger and current_time - last_trigger_time > cooldown:
+            print(f"\n触发！")
+            print(f"   绿色宽度: {green_width}px")
+            print(f"   竖线: {w_x} | 绿色: [{g_left}, {g_right}]")
+            print(f"   距离边界: {dist_to_green}px")
+            print(f"   还需{frames_needed:.2f}帧 | 动态延迟: {delay_frames}帧")
+
+            keyboard.press(Key.space)
+            time.sleep(0.05)
+            keyboard.release(Key.space)
+
+            last_trigger_time = current_time
+            print(f"⌨️ 已按空格")
 
         # 显示实时信息
-        status = f"竖线: {w_x} | 绿色: [{g_left}, {g_right}] | 距离: {distance_to_center}"
+        status = f"绿宽:{green_width}px | 竖线:{w_x} | 距绿:{dist_to_green}px | 需{frames_needed:.1f}帧 | 延迟:{delay_frames}f"
         print(f"\r{status}", end="", flush=True)
 
-        # 判定后的动画时间
         time.sleep(0.016)
+        
